@@ -585,5 +585,5 @@ garv@VM2_IP:/home/garv/Project/
 - https://criu.org/
 - https://github.com/checkpoint-restore/criu
 - https://man7.org/linux/man-pages/man8/criu.8.html
-
+- https://www.youtube.com/watch?v=votyhJo0-Kc
 ---
