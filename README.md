@@ -1,29 +1,35 @@
-# Distributed-Process-Migration-using-CRIU
+# Distributed Process Migration using CRIU
 
 # CRIU Process Migration using Ubuntu VMs (VMware Fusion)
 
 This project demonstrates **process checkpoint and restore** using **CRIU (Checkpoint/Restore In Userspace)** across two Ubuntu virtual machines running on VMware Fusion.
 
+The project contains two migration approaches:
+
+1. **Linux process migration using CRIU**
+2. **Container migration using Podman + CRIU**
+
 ---
 
 # System Configuration
 
-| Component | Details |
-|-----------|---------|
-| Host OS | macOS |
-| Hypervisor | VMware Fusion |
-| Guest OS | Ubuntu 24.04.4 LTS ARM64 |
-| Architecture | ARM64 (Apple Silicon) |
-| Source VM | VM1 (garv) |
-| Destination VM | VM2 (garv) |
-| Programming Language | Python |
-| Migration Tool | CRIU |
+| Component            | Details                  |
+| -------------------- | ------------------------ |
+| Host OS              | macOS                    |
+| Hypervisor           | VMware Fusion            |
+| Guest OS             | Ubuntu 24.04.4 LTS ARM64 |
+| Architecture         | ARM64 (Apple Silicon)    |
+| Source VM            | VM1                      |
+| Destination VM       | VM2                      |
+| Programming Language | Python                   |
+| Container Runtime    | Podman                   |
+| Migration Tool       | CRIU                     |
 
 ---
 
 # Project Structure
 
-```
+```text
 Project/
 │
 ├── number.py
@@ -39,15 +45,15 @@ Project/
 
 ---
 
-# Installing CRIU
+# 1. Installing CRIU
 
-Update package lists
+Update package lists:
 
 ```bash
 sudo apt update
 ```
 
-Install required packages
+Install required packages:
 
 ```bash
 sudo apt install -y \
@@ -69,26 +75,26 @@ libbsd-dev \
 uuid-dev
 ```
 
-Clone CRIU
+Clone CRIU:
 
 ```bash
 git clone https://github.com/checkpoint-restore/criu.git
 cd criu
 ```
 
-Compile
+Compile:
 
 ```bash
 make -j$(nproc)
 ```
 
-Install
+Install:
 
 ```bash
 sudo make install DOCBOOK=no
 ```
 
-Verify
+Verify:
 
 ```bash
 criu --version
@@ -96,79 +102,131 @@ criu --version
 
 ---
 
-# Installing SSH
+# 2. Installing SSH
 
-Destination VM
+SSH is used to transfer checkpoint data between the two VMs.
+
+On the destination VM:
 
 ```bash
 sudo apt update
 sudo apt install openssh-server
+```
+
+Enable SSH:
+
+```bash
 sudo systemctl enable --now ssh
 ```
 
-Verify
+Verify:
 
 ```bash
 sudo systemctl status ssh
 ```
 
-Find IP
+Find the VM IP:
 
 ```bash
 hostname -I
 ```
 
-Connect from source VM
+Connect from the source VM:
 
 ```bash
-ssh username@VM2_IP
+ssh <username>@<VM2_IP>
+```
+
+Example:
+
+```bash
+ssh user@192.168.64.11
 ```
 
 ---
 
-# Running the Process
+# 3. Direct Process Migration Using CRIU
+
+This section demonstrates checkpoint and restore of a normal Linux process without a container.
+
+## Run the Process
+
+On VM1:
 
 ```bash
 python3 number.py
 ```
 
-Find PID
+Find the process ID:
 
 ```bash
 pgrep -af number.py
 ```
 
-Example
+Example:
 
-```
+```text
 6075 python3 number.py
 ```
 
 ---
 
-# Checkpoint
+## Checkpoint the Process
+
+Create the checkpoint directory:
 
 ```bash
 mkdir -p dump/demo
+```
 
+Checkpoint the process:
+
+```bash
 sudo criu dump \
 -t 6075 \
 -D dump/demo \
 --shell-job
 ```
 
----
+CRIU creates checkpoint image files:
 
-# Transfer Checkpoint
-
-```bash
-scp -r dump \
-garv@VM2_IP:/home/garv/Project/
+```text
+dump/demo/
+├── inventory.img
+├── files.img
+├── pstree.img
+├── ...
 ```
 
 ---
 
-# Restore
+## Transfer Checkpoint
+
+Transfer the checkpoint directory to VM2:
+
+```bash
+scp -r dump \
+<username>@<VM2_IP>:/home/<username>/Project/
+```
+
+Example:
+
+```bash
+scp -r dump \
+user@192.168.64.11:/home/user/Project/
+```
+
+---
+
+## Restore
+
+On VM2:
+
+```bash
+cd ~/Project
+```
+
+Restore the process:
 
 ```bash
 sudo criu restore \
@@ -176,23 +234,490 @@ sudo criu restore \
 --shell-job
 ```
 
----
-
-# Problems Encountered and Solutions
+The process should continue from the checkpointed state.
 
 ---
 
-## 1. apt could not locate CRIU
+# 4. AppArmor Configuration for CRIU
+
+AppArmor provides security profiles that restrict the capabilities of processes and containers.
+
+During CRIU checkpoint/restore experiments, AppArmor can interfere with restoring processes or containers because the security state of the destination environment may differ from the source.
+
+For this experimental project, AppArmor can be disabled on both VMs.
+
+## Check AppArmor Status
+
+Run:
+
+```bash
+sudo apparmor_status
+```
+
+If AppArmor is active, the output contains:
+
+```text
+apparmor module is loaded.
+```
+
+It may also show profiles in:
+
+```text
+enforce mode
+complain mode
+unconfined mode
+```
+
+---
+
+## Disable AppArmor
+
+Edit the GRUB configuration:
+
+```bash
+sudo nano /etc/default/grub
+```
+
+Find:
+
+```text
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
+```
+
+Change it to:
+
+```text
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash apparmor=0"
+```
+
+Save the file and update GRUB:
+
+```bash
+sudo update-grub
+```
+
+Reboot:
+
+```bash
+sudo reboot
+```
+
+---
+
+## Verify AppArmor Is Disabled
+
+After reboot:
+
+```bash
+sudo apparmor_status
+```
+
+Also check:
+
+```bash
+cat /proc/cmdline
+```
+
+The kernel command line should contain:
+
+```text
+apparmor=0
+```
+
+The AppArmor status should indicate that the module is not loaded.
+
+> **Note:** Disabling AppArmor reduces system security. This configuration should only be used on the controlled VMs used for this CRIU experiment.
+
+---
+
+# 5. Container Migration Using Podman + CRIU
+
+This section demonstrates checkpointing and restoring a complete container using **Podman and CRIU**.
+
+Podman provides native checkpoint and restore functionality backed by CRIU.
+
+The container can be checkpointed on VM1, exported as an archive, transferred to VM2, and restored there.
+
+---
+
+# 6. Run the Container
+
+On VM1:
+
+```bash
+sudo podman run \
+-d \
+--name pdm-golang-new \
+-p 8081:8080 \
+docker.io/garvagrawal9084/pdm-golang:latest
+```
+
+Check the running container:
+
+```bash
+sudo podman ps
+```
+
+You can inspect the container with:
+
+```bash
+sudo podman inspect pdm-golang-new
+```
+
+---
+
+# 7. Create a Container Checkpoint
+
+Create and export the checkpoint:
+
+```bash
+sudo podman container checkpoint \
+--leave-running \
+-l \
+--export=/tmp/cp.tar.gz
+```
+
+### Options
+
+* `--leave-running` — keeps the original container running after checkpointing.
+* `-l` — selects the latest container.
+* `--export=/tmp/cp.tar.gz` — exports the checkpoint to a compressed archive.
+
+Verify that the checkpoint exists:
+
+```bash
+ls -lh /tmp/cp.tar.gz
+```
+
+Example:
+
+```text
+-rw------- 1 root root 55K Aug 9 22:04 /tmp/cp.tar.gz
+```
+
+---
+
+# 8. Transfer the Container Checkpoint
+
+Transfer the checkpoint archive from VM1 to VM2:
+
+```bash
+sudo scp /tmp/cp.tar.gz \
+<username>@<VM2_IP>:/tmp/
+```
+
+Example:
+
+```bash
+sudo scp /tmp/cp.tar.gz \
+user@192.168.64.11:/tmp/
+```
+
+The file will be available on VM2 as:
+
+```text
+/tmp/cp.tar.gz
+```
+
+---
+
+# 9. Verify the Checkpoint on VM2
+
+On VM2:
+
+```bash
+ls -lh /tmp/cp.tar.gz
+```
+
+Make sure the archive exists before attempting the restore.
+
+---
+
+# 10. Restore the Container
+
+The checkpoint archive should be passed directly to Podman using `--import`.
+
+Do not manually extract the archive.
+
+Run:
+
+```bash
+sudo podman container restore \
+--import=/tmp/cp.tar.gz \
+--name pdm-golang-new \
+-p 8081:8080
+```
+
+The restored container can also use a different host port.
+
+For example:
+
+```bash
+sudo podman container restore \
+--import=/tmp/cp.tar.gz \
+--name pdm-golang-new \
+-p 8082:8080
+```
+
+Here:
+
+```text
+8082:8080
+```
+
+means:
+
+```text
+Host port 8082 → Container port 8080
+```
+
+---
+
+# 11. Verify the Restored Container
+
+Check running containers:
+
+```bash
+sudo podman ps
+```
+
+Check all containers:
+
+```bash
+sudo podman ps -a
+```
+
+Inspect the restored container:
+
+```bash
+sudo podman inspect pdm-golang-new
+```
+
+Check port mapping:
+
+```bash
+sudo podman port pdm-golang-new
+```
+
+Example:
+
+```text
+8080/tcp -> 0.0.0.0:8081
+```
+
+---
+
+# 12. Complete Container Migration Workflow
+
+The complete workflow is:
+
+```text
+                    VM1
+                     │
+                     │
+             ┌───────▼────────┐
+             │  Run Container │
+             │     Podman     │
+             └───────┬────────┘
+                     │
+                     │ CRIU checkpoint
+                     ▼
+             ┌────────────────┐
+             │  cp.tar.gz     │
+             │ /tmp/cp.tar.gz │
+             └───────┬────────┘
+                     │
+                     │ SCP / SSH
+                     ▼
+             ┌────────────────┐
+             │      VM2       │
+             │ /tmp/cp.tar.gz │
+             └───────┬────────┘
+                     │
+                     │ Podman restore
+                     ▼
+             ┌────────────────┐
+             │    Restored    │
+             │    Container   │
+             └────────────────┘
+```
+
+---
+
+# 13. Complete Podman Migration Commands
+
+## VM1 — Run Container
+
+```bash
+sudo podman run -d \
+  --name pdm-golang-new \
+  -p 8081:8080 \
+  docker.io/garvagrawal9084/pdm-golang:latest
+```
+
+## VM1 — Create Checkpoint
+
+```bash
+sudo podman container checkpoint \
+  --leave-running \
+  -l \
+  --export=/tmp/cp.tar.gz
+```
+
+## VM1 — Verify Checkpoint
+
+```bash
+ls -lh /tmp/cp.tar.gz
+```
+
+## VM1 — Transfer Checkpoint
+
+```bash
+sudo scp /tmp/cp.tar.gz \
+  <username>@<VM2_IP>:/tmp/
+```
+
+## VM2 — Verify
+
+```bash
+ls -lh /tmp/cp.tar.gz
+```
+
+## VM2 — Restore
+
+```bash
+sudo podman container restore \
+  --import=/tmp/cp.tar.gz \
+  --name pdm-golang-new \
+  -p 8081:8080
+```
+
+---
+
+# 14. Important Podman Migration Notes
+
+## Checkpoint Filename
+
+The checkpoint generated in this project is:
+
+```text
+/tmp/cp.tar.gz
+```
+
+Therefore, use:
+
+```bash
+scp /tmp/cp.tar.gz ...
+```
+
+Do not use:
+
+```bash
+scp /tmp/test.tar.gz ...
+```
+
+unless that file actually exists.
+
+---
+
+## Use an Absolute Path
+
+Correct:
+
+```bash
+sudo podman container restore \
+--import=/tmp/cp.tar.gz \
+--name pdm-golang-new \
+-p 8081:8080
+```
+
+Incorrect:
+
+```bash
+sudo podman container restore \
+--import=tmp/cp.tar.gz
+```
+
+The second command searches for:
+
+```text
+./tmp/cp.tar.gz
+```
+
+instead of:
+
+```text
+/tmp/cp.tar.gz
+```
+
+---
+
+## Use Two Normal Hyphens
+
+Correct:
+
+```text
+--import
+--name
+```
+
+Incorrect:
+
+```text
+—import
+—name
+```
+
+The second form uses a Unicode em dash and is not recognized as a command-line option.
+
+---
+
+# 15. CRIU and Podman Compatibility
+
+Check CRIU:
+
+```bash
+criu --version
+```
+
+Check Podman:
+
+```bash
+podman --version
+```
+
+Check Podman configuration:
+
+```bash
+sudo podman info
+```
+
+The source and destination machines should have compatible:
+
+* Ubuntu versions
+* Kernel versions/configuration
+* CPU architecture
+* CRIU versions
+* Podman versions
+* OCI runtime
+* cgroup configuration
+* Container configuration
+
+---
+
+# 16. Problems Encountered and Solutions
+
+## 1. apt Could Not Locate CRIU
 
 ### Error
 
-```
+```text
 Package 'criu' has no installation candidate
 ```
 
 ### Cause
 
-Ubuntu ARM repositories did not provide CRIU package.
+Ubuntu ARM repositories did not provide the required CRIU package.
 
 ### Solution
 
@@ -200,25 +725,26 @@ Compiled CRIU from source.
 
 ---
 
-## 2. apt repository timeout
+## 2. apt Repository Timeout
 
 ### Error
 
-```
+```text
 Connection failed
 Could not connect to ports.ubuntu.com
 ```
 
 ### Cause
 
-Mirror connection issue.
+Repository mirror/network connection issue.
 
 ### Solution
 
-Forced IPv4.
+Forced IPv4:
 
 ```bash
-echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+echo 'Acquire::ForceIPv4 "true";' | \
+sudo tee /etc/apt/apt.conf.d/99force-ipv4
 ```
 
 ---
@@ -227,18 +753,25 @@ echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
 
 ### Error
 
-```
+```text
 Could not get lock
 ```
 
 ### Cause
 
-Another apt process running.
+Another apt process was running.
 
 ### Solution
 
+Check:
+
 ```bash
 ps aux | grep apt
+```
+
+If necessary:
+
+```bash
 sudo kill -9 PID
 ```
 
@@ -248,16 +781,16 @@ sudo kill -9 PID
 
 ### Error
 
-```
+```text
 Compilation aborted.
 Can not find required libraries.
 ```
 
 ### Solution
 
-Installed
+Installed:
 
-```
+```text
 libprotobuf-dev
 libprotobuf-c-dev
 protobuf-c-compiler
@@ -272,11 +805,11 @@ libaio-dev
 
 ---
 
-## 5. make install failed
+## 5. make install Failed
 
 ### Error
 
-```
+```text
 asciidoc: not found
 ```
 
@@ -285,8 +818,6 @@ asciidoc: not found
 Documentation generation.
 
 ### Solution
-
-Skipped documentation.
 
 ```bash
 sudo make install DOCBOOK=no
@@ -298,27 +829,29 @@ sudo make install DOCBOOK=no
 
 ### Error
 
-```
+```text
 No space left on device
 ```
 
 ### Cause
 
-Installing documentation packages pulled huge TeX dependencies.
+Installing documentation packages pulled large TeX dependencies.
 
 ### Solution
 
 Removed unnecessary packages.
 
-Avoid installing
+Avoid installing:
 
-```
+```text
 asciidoc
 xmlto
 dblatex
 texlive*
 docbook*
 ```
+
+when documentation is not required.
 
 ---
 
@@ -330,11 +863,11 @@ Ubuntu reset every reboot.
 
 ### Cause
 
-Still booting from ISO.
+The VM was still booting from the installation ISO.
 
 ### Solution
 
-Removed installer ISO after Ubuntu installation.
+Removed the installer ISO after Ubuntu installation.
 
 Eventually switched to VMware Fusion.
 
@@ -344,7 +877,7 @@ Eventually switched to VMware Fusion.
 
 ### Error
 
-```
+```text
 Active: inactive (dead)
 ```
 
@@ -356,7 +889,7 @@ sudo systemctl enable --now ssh
 
 ---
 
-## 9. pidof did not find Python script
+## 9. pidof Did Not Find Python Script
 
 ### Error
 
@@ -368,7 +901,7 @@ returned nothing.
 
 ### Solution
 
-Use
+Use:
 
 ```bash
 pgrep -af number.py
@@ -376,11 +909,11 @@ pgrep -af number.py
 
 ---
 
-## 10. CRIU refused terminal process
+## 10. CRIU Refused Terminal Process
 
 ### Error
 
-```
+```text
 Task attached to shell terminal.
 ```
 
@@ -399,38 +932,26 @@ sudo criu dump \
 
 ### Error
 
-```
+```text
 Can't open cwd
 ```
 
-```
+```text
 No such file or directory
 ```
 
 ### Cause
 
-Different usernames.
-
-VM1
-
-```
-/home/garv/Project
-```
-
-VM2
-
-```
-/home/vm2/Project
-```
+Different usernames or directory structures on the source and destination VMs.
 
 ### Solution
 
-Use identical directory structure.
+Use identical directory structures on both VMs.
 
-Recommended
+For example:
 
-```
-/home/garv/Project
+```text
+/home/user/Project
 ```
 
 on both VMs.
@@ -441,20 +962,18 @@ on both VMs.
 
 ### Error
 
-```
+```text
 bad mode 040755
 expect 040775
 ```
 
 ### Solution
 
-Either
-
 ```bash
-chmod 775 /home/garv/Project
+chmod 775 /home/user/Project
 ```
 
-or
+Alternatively:
 
 ```bash
 sudo criu restore \
@@ -469,15 +988,13 @@ sudo criu restore \
 
 ### Warning
 
-```
+```text
 CRIU was built without libnftables support
 ```
 
-### Solution
+### Explanation
 
-Non-blocking warning.
-
-Can be ignored.
+This was treated as a non-blocking warning for the basic migration experiment.
 
 ---
 
@@ -485,65 +1002,236 @@ Can be ignored.
 
 ### Error
 
-```
+```text
 cg: cgroupd: recv req error
 ```
 
 ### Cause
 
-Restore environment mismatch.
+Possible mismatch between checkpoint and restore environments.
 
 ### Solution
 
-Ensure
+Ensure:
 
-- Same Ubuntu version
-- Same CRIU version
-- Same directory structure
-- Same user
-- Same kernel configuration
+* Same Ubuntu version
+* Compatible kernel configuration
+* Same CRIU version
+* Same Podman version
+* Compatible OCI runtime
+* Same CPU architecture
+* Compatible cgroup configuration
+* Same filesystem paths
 
 ---
 
 ## 15. VMware Networking
 
-Configured both VMs on the same virtual network.
+Both VMs were configured on the same virtual network.
 
-Verified connectivity
+Verify connectivity:
 
 ```bash
 ping VM2_IP
 ```
 
-Verified SSH
+Verify SSH:
 
 ```bash
-ssh garv@VM2_IP
+ssh <username>@VM2_IP
 ```
 
 ---
 
-# Useful Commands
+## 16. AppArmor Enabled
 
-Current IP
+### Problem
+
+AppArmor was active during checkpoint/restore experiments.
+
+Check:
+
+```bash
+sudo apparmor_status
+```
+
+If the output contains:
+
+```text
+apparmor module is loaded.
+```
+
+AppArmor is active.
+
+### Solution
+
+Add the following kernel parameter:
+
+```text
+apparmor=0
+```
+
+to:
+
+```text
+/etc/default/grub
+```
+
+For example:
+
+```text
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash apparmor=0"
+```
+
+Then:
+
+```bash
+sudo update-grub
+sudo reboot
+```
+
+Verify:
+
+```bash
+cat /proc/cmdline
+```
+
+and:
+
+```bash
+sudo apparmor_status
+```
+
+---
+
+## 17. Incorrect Checkpoint Filename
+
+### Error
+
+```text
+scp: stat local "/tmp/test.tar.gz": No such file or directory
+```
+
+### Cause
+
+The checkpoint was created as:
+
+```text
+/tmp/cp.tar.gz
+```
+
+but the SCP command referenced:
+
+```text
+/tmp/test.tar.gz
+```
+
+### Solution
+
+```bash
+scp /tmp/cp.tar.gz \
+<username>@VM2_IP:/tmp/
+```
+
+---
+
+## 18. Incorrect Checkpoint Path During Restore
+
+### Error
+
+```text
+failed to open checkpoint archive tmp/cp.tar.gz
+No such file or directory
+```
+
+### Cause
+
+The path was written as:
+
+```text
+tmp/cp.tar.gz
+```
+
+instead of:
+
+```text
+/tmp/cp.tar.gz
+```
+
+### Solution
+
+```bash
+sudo podman container restore \
+--import=/tmp/cp.tar.gz \
+--name pdm-golang-new \
+-p 8081:8080
+```
+
+---
+
+# 17. Useful Commands
+
+## Current IP
 
 ```bash
 hostname -I
 ```
 
-Running SSH
+## SSH Status
 
 ```bash
 sudo systemctl status ssh
 ```
 
-Find Process
+## Find Process
 
 ```bash
 pgrep -af number.py
 ```
 
-Checkpoint
+## CRIU Version
+
+```bash
+criu --version
+```
+
+## Podman Version
+
+```bash
+podman --version
+```
+
+## AppArmor Status
+
+```bash
+sudo apparmor_status
+```
+
+## Kernel Parameters
+
+```bash
+cat /proc/cmdline
+```
+
+## Running Containers
+
+```bash
+sudo podman ps
+```
+
+## All Containers
+
+```bash
+sudo podman ps -a
+```
+
+## Podman Information
+
+```bash
+sudo podman info
+```
+
+## Checkpoint Process
 
 ```bash
 sudo criu dump \
@@ -552,7 +1240,7 @@ sudo criu dump \
 --shell-job
 ```
 
-Restore
+## Restore Process
 
 ```bash
 sudo criu restore \
@@ -560,30 +1248,56 @@ sudo criu restore \
 --shell-job
 ```
 
-Transfer
+## Checkpoint Container
 
 ```bash
-scp -r dump \
-garv@VM2_IP:/home/garv/Project/
+sudo podman container checkpoint \
+--leave-running \
+-l \
+--export=/tmp/cp.tar.gz
+```
+
+## Transfer Container Checkpoint
+
+```bash
+scp /tmp/cp.tar.gz \
+<username>@VM2_IP:/tmp/
+```
+
+## Restore Container
+
+```bash
+sudo podman container restore \
+--import=/tmp/cp.tar.gz \
+--name pdm-golang-new \
+-p 8081:8080
 ```
 
 ---
 
-# Lessons Learned
+# 18. Lessons Learned
 
-- CRIU is extremely sensitive to filesystem paths.
-- Source and destination systems should be nearly identical.
-- Using the same username on both systems avoids many restore issues.
-- Documentation packages are not required for CRIU.
-- SSH simplifies transferring checkpoint images.
-- VMware Fusion provided a more reliable environment than UTM for this project.
+* CRIU is sensitive to filesystem paths.
+* Source and destination systems should be as similar as possible.
+* Using the same username on both systems simplifies process migration.
+* The working directory required by a checkpoint must exist on the destination.
+* SSH simplifies transferring checkpoint images.
+* AppArmor security policies can affect checkpoint/restore experiments.
+* Podman provides native checkpoint and restore functionality using CRIU.
+* Podman can export a container checkpoint as an archive.
+* The checkpoint archive can be transferred between VMs using SCP.
+* Podman can restore the exported checkpoint directly using `--import`.
+* The restored container can be assigned a new name using `--name`.
+* Port mappings can be changed during restore using `-p`.
+* VMware Fusion provided a more reliable environment for this project than the earlier UTM setup.
 
 ---
 
 # References
 
-- https://criu.org/
-- https://github.com/checkpoint-restore/criu
-- https://man7.org/linux/man-pages/man8/criu.8.html
-- https://www.youtube.com/watch?v=votyhJo0-Kc
----
+* [CRIU](https://criu.org/)
+* [CRIU GitHub](https://github.com/checkpoint-restore/criu)
+* [CRIU Manual](https://man7.org/linux/man-pages/man8/criu.8.html)
+* [Podman Checkpoint Documentation](https://docs.podman.io/en/stable/markdown/podman-container-checkpoint.1.html)
+* [Podman Restore Documentation](https://docs.podman.io/en/stable/markdown/podman-container-restore.1.html)
+* [CRIU Process Migration Video](https://www.youtube.com/watch?v=votyhJo0-Kc)
