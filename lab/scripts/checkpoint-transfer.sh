@@ -9,7 +9,7 @@ WORK="$HOME/minimeet-migration/v3"
 SOURCE_CONTAINER=k3s-server
 mkdir -p "$WORK"
 chmod 700 "$WORK"
-k() { sudo podman exec "$SOURCE_CONTAINER" kubectl "$@"; }
+k() { sudo podman exec -i "$SOURCE_CONTAINER" kubectl "$@"; }
 ssh_dest() { ssh -i "$SSH_KEY" -o IdentitiesOnly=yes "${DEST_USER}@${DEST_IP}" "$@"; }
 POD="$(k get pods -l app=minimeet-backend -o jsonpath='{.items[0].metadata.name}')"
 test -n "$POD"
