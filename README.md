@@ -1783,17 +1783,6 @@ The specific failed-to-successful sequence changed multiple variables (runtime v
 
 ---
 
-# References
-
-* [CRIU](https://criu.org/)
-* [CRIU GitHub](https://github.com/checkpoint-restore/criu)
-* [CRIU Manual](https://man7.org/linux/man-pages/man8/criu.8.html)
-* [Podman Checkpoint Documentation](https://docs.podman.io/en/stable/markdown/podman-container-checkpoint.1.html)
-* [Podman Restore Documentation](https://docs.podman.io/en/stable/markdown/podman-container-restore.1.html)
-* [CRIU Process Migration Video](https://www.youtube.com/watch?v=votyhJo0-Kc)
-
----
-
 # 22. MiniMeet three-container K3s CRIU migration — successful experiment
 
 **Experiment date:** 10 November 2026. **Outcome:** successful multi-container CRIU restore, successful application resume and successful post-restore asynchronous job processing.
@@ -2103,3 +2092,33 @@ A strong result requires **all** of the following: successful three-container `P
 ---
 
 _End of multi-container MiniMeet experiment and reproducible lab walkthrough._
+
+---
+
+# References
+
+## CRIU and container checkpoint/restore
+
+- [CRIU official website](https://criu.org/)
+- [CRIU source code](https://github.com/checkpoint-restore/criu)
+- [CRIU manual](https://man7.org/linux/man-pages/man8/criu.8.html)
+- [Podman container checkpoint documentation](https://docs.podman.io/en/stable/markdown/podman-container-checkpoint.1.html)
+- [Podman container restore documentation](https://docs.podman.io/en/stable/markdown/podman-container-restore.1.html)
+- [CRIU process migration video](https://www.youtube.com/watch?v=votyhJo0-Kc)
+
+## Kubernetes and K3s
+
+- [Kubernetes container checkpointing overview](https://kubernetes.io/blog/2022/12/05/forensic-container-checkpointing-alpha/)
+- [Checkpoint/Restore Operator (source and examples)](https://github.com/checkpoint-restore/checkpoint-restore-operator)
+- [Checkpoint/Restore Operator — PodRestore and CRI proxy guide](https://github.com/checkpoint-restore/checkpoint-restore-operator/blob/main/docs/restore.md)
+- [K3s documentation](https://docs.k3s.io/)
+- [Kubernetes PersistentVolumes and PersistentVolumeClaims](https://kubernetes.io/docs/concepts/storage/persistent-volumes/)
+- [Kubernetes init containers](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/)
+- [Kubernetes Secrets](https://kubernetes.io/docs/concepts/configuration/secret/)
+
+## Data services and application
+
+- [PostgreSQL pg_dump reference](https://www.postgresql.org/docs/16/app-pgdump.html)
+- [PostgreSQL pg_restore reference](https://www.postgresql.org/docs/16/app-pgrestore.html)
+- [Redis persistence: RDB and AOF](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/)
+- [FastAPI documentation](https://fastapi.tiangolo.com/)
