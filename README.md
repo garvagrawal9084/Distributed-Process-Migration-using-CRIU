@@ -4,10 +4,11 @@
 
 This project demonstrates **process checkpoint and restore** using **CRIU (Checkpoint/Restore In Userspace)** across two Ubuntu virtual machines running on VMware Fusion.
 
-The project contains two migration approaches:
+The project contains three migration approaches:
 
 1. **Linux process migration using CRIU**
 2. **Container migration using Podman + CRIU**
+3. **Multi-container Kubernetes/K3s application migration using the PodRestore operator** — see [Section 22: MiniMeet successful experiment and runnable lab](#22-minimeet-three-container-k3s-criu-migration--successful-experiment)
 
 ---
 
@@ -1790,3 +1791,315 @@ The specific failed-to-successful sequence changed multiple variables (runtime v
 * [Podman Checkpoint Documentation](https://docs.podman.io/en/stable/markdown/podman-container-checkpoint.1.html)
 * [Podman Restore Documentation](https://docs.podman.io/en/stable/markdown/podman-container-restore.1.html)
 * [CRIU Process Migration Video](https://www.youtube.com/watch?v=votyhJo0-Kc)
+
+---
+
+# 22. MiniMeet three-container K3s CRIU migration — successful experiment
+
+**Experiment date:** 10 November 2026. **Outcome:** successful multi-container CRIU restore, successful application resume and successful post-restore asynchronous job processing.
+
+This is the more demanding follow-on to Section 19's single-container NGINX demonstration. The migration involved one Pod with three *checkpoint-restored processes* — a FastAPI backend, a Redis job worker, and a BusyBox log sidecar — plus separately exported/restored PostgreSQL and Redis data.
+
+> **Scope:** This is an experimental **stop/quiesce → checkpoint → transfer → restore → resume** migration between **two independent K3s clusters**, not zero-downtime live migration. The application and database were quiesced to prevent split-brain writes. CRIU restored container processes; **PostgreSQL, Redis and the shared `emptyDir` needed separate backups**. No measured downtime or production traffic cutover was performed.
+
+## 22.1 What actually worked
+
+| Component | Source | Destination | Final proof |
+| --- | --- | --- | --- |
+| K3s | Root-owned Podman `k3s-server`, `v1.34.1+k3s1` | VM-native K3s `v1.34.1+k3s1` | Compatible runtime setup |
+| Containerd / runc / CRIU | `2.1.4-k3s2` / `1.3.1` / `4.2.1` | Same versions | CRIU restore completed |
+| Application Pod | `minimeet-backend-59f56fbff7-5stch` | `minimeet-restored-v3` | `3/3 Running`, zero restarts |
+| Backend | `localhost/minimeet-backend:v3`, Uvicorn `--loop asyncio` | Checkpoint-restored Python/Uvicorn | `GET /health` HTTP 200 |
+| Worker | `python worker.py` | Checkpoint-restored worker | Processed meeting #3 |
+| Sidecar | `busybox:1.36`, tails `/shared/worker.log` | Checkpoint-restored `tail -F` | Shared log accessible |
+| PostgreSQL | `postgres:16-alpine` | 2 GiB `local-path` PVC | Original meetings #1 and #2 retained |
+| Redis | `redis:7-alpine` | 1 GiB PVC, AOF enabled after RDB import | `PONG`, recovered key count 0 |
+| Shared filesystem | `emptyDir` mounted at `/shared` | Restored via init container before CRIU processes | `minimeet.pause` and status files present |
+
+**Observed final result on the destination:**
+
+```text
+PodRestore minimeet-restored-v3   READY=True   REASON=Restored
+Pod        minimeet-restored-v3   READY=3/3    STATUS=Running   RESTARTS=0
+GET /health -> HTTP 200
+{"status":"healthy","database":true,"redis":true}
+POST /meetings -> {"id":3,"title":"CRIU Migration Success Test","status":"queued"}
+PostgreSQL row 3 -> processed_at=2026-11-10 16:24:53.659698+00
+```
+
+The **non-NULL `processed_at`** for meeting #3 is the critical end-to-end result: *restored backend → Redis queue → restored worker → PostgreSQL*. The original two records retained their original `created_at` and `processed_at` timestamps.
+
+### Architecture
+
+```text
+SOURCE VM (Thalla)                                  DESTINATION VM (checkpoint-restore-dest)
+Root-owned Podman: k3s-server                        VM-native K3s + CRI proxy + PodRestore operator
+  MiniMeet Pod                                         MiniMeet Pod (same 3 process checkpoints)
+    backend ─┐                                         init container: extract /shared backup
+    worker  ├── /shared emptyDir                        then restore backend + worker + sidecar
+    sidecar ┘                                          /shared/minimeet.pause preserved
+  PostgreSQL + PVC                                    PostgreSQL + new PVC (pg_restore)
+  Redis                                               Redis + new PVC (RDB then AOF)
+     │                                                        ▲
+     └─ quiesce → kubelet checkpoint API → archive transfer ─┘
+          + pg_dump + Redis RDB + shared.tar + app image + Secrets
+                        sha256sum verification
+```
+
+## 22.2 Problems encountered, diagnosis and working fixes
+
+These are problems encountered during the actual November experiment, in addition to the single-container troubleshooting in Section 20.
+
+| Problem / symptom | Diagnosis | Resolution used |
+| --- | --- | --- |
+| **CRIU backend checkpoint failed with `io_uring` mappings** | Uvicorn's default uvloop created kernel resources unsupported in this checkpoint setup. | Launch backend with `uvicorn app:app --host 0.0.0.0 --port 8000 --loop asyncio`. Rebuild the image, roll out a fresh Pod and take fresh checkpoints. |
+| **Worker encountered Redis socket timeouts on `BRPOP`** | Blocking queue reads exceeded/competed with socket timeouts. | Use `BRPOP` with a short bounded timeout (2 s in the reference code), and a longer socket timeout (5 s); reconnect on errors. |
+| **External DB/Redis connections could make checkpoint inconsistent** | A Pod checkpoint does not freeze PostgreSQL/Redis, and restored connections may not survive networking changes. | Reject new requests, finish in-flight work, close client connections, wait for `PAUSED`, verify no DB/Redis clients from the Pod, and only then checkpoint/backup. |
+| **`/shared` emptyDir would be empty on a fresh Pod** | CRIU container archives are not an automatic backup of Kubernetes `emptyDir` content. | Capture `shared.tar`; use a temporary Secret and `restore-shared` init container to extract the archive **before** starting checkpoint-restored containers. |
+| **Source `podman exec k3s-server` said “no container found”** | Source K3s Podman container belongs to **root**, not the login user's Podman store. | `sudo podman exec -i k3s-server kubectl ...`. |
+| **`error: unknown command "kubectl" for "kubectl"`** | Nested `k3s kubectl` invocation did not work inside the source container image. | Invoke the actual `kubectl` entrypoint: `sudo podman exec k3s-server kubectl get pods`. |
+| **`postgres-data` and `redis-data` were initially `Pending`** | K3s `local-path` uses `WaitForFirstConsumer`. | Create the consuming Deployment, then verify PVC `Bound`. No manual PV is required. |
+| **Postgres stayed `ContainerCreating` and `kubectl exec` reported “container not found”** | The `postgres:16-alpine` image was still being pulled. | Check Pod events and image cache; wait for `1/1 Running`. Do not prematurely delete PVCs. |
+| **Redis RDB versus AOF precedence** | Starting Redis with AOF already enabled can make it load AOF instead of the desired RDB. | Initialize a clean PVC with `dump.rdb`; start with `appendonly no`; confirm RDB load, enable AOF with `CONFIG SET appendonly yes`, verify rewrite, then persist `appendonly yes` in the Deployment and roll out. |
+| **`PodRestore` strict decoding: `unknown field "spec.template.metadata.labels"`** | The installed operator's schema rejected labels under `spec.template.metadata`. | Remove that metadata block; retain only supported `spec.template.spec` fields. Validate with `kubectl apply --dry-run=server` before applying. |
+| **`ls /var/lib/kubelet/checkpoints/...*` failed despite valid checksums** | The shell expands wildcards before `sudo`; a protected directory prevents expansion. | Use `sudo find /var/lib/kubelet/checkpoints -maxdepth 1 -name 'checkpoint-minimeet*'`. |
+| **Restored Pod reported `2/3 Ready` with HTTP 503** | The backend's readiness endpoint intentionally rejects requests while `minimeet.pause` exists. | This is the safe paused state. Verify zero DB/Redis connections and all processes running; remove the pause **on the destination only**, then verify `3/3 Running` and HTTP 200. |
+| **Operator said `Restored` before full functional verification** | `PodRestore Ready=True` indicates the Pod is running, not that background work and service connectivity are correct. | Submit a real meeting after resuming and verify that its PostgreSQL `processed_at` becomes non-NULL. |
+
+Other relevant lessons: use the *actual* source container's version instead of the host's unrelated `k3s` binary; transfer timestamped checkpoint names taken from kubelet's response rather than hardcoding them; import the same application image on both nodes; treat checkpoint archives and Secrets as sensitive; do not restart or delete the paused source until the destination is verified.
+
+## 22.3 Files added to reproduce the experiment
+
+The original repository contained only this README. The following **reference MiniMeet application** and migration scripts were added to make the procedure actionable:
+
+```text
+lab/
+├── minimeet/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── app.py
+│   └── worker.py
+├── k8s/
+│   ├── source.yaml
+│   └── destination.yaml
+└── scripts/
+    ├── source-setup.sh
+    ├── checkpoint-transfer.sh
+    ├── destination-restore.sh
+    └── validate-destination.sh
+```
+
+**Reproducibility note:** The reference application is reconstructed from the tested MiniMeet behavior and architecture, **not a byte-for-byte copy of the original VM's application code**. The November results above are from the original application; these newly added example scripts have not been independently run on two fresh VMs as a suite. They are designed to reproduce the same workflow but need a compatible preconfigured runtime. The checkpoint and database backup files from the original lab are **not** committed, intentionally.
+
+## 22.4 Prerequisites — read before copying commands
+
+This is a **two-VM lab**, not a script that installs a full compatible CRIU/K3s runtime on arbitrary hosts.
+
+- Both hosts must be Linux of the **same CPU architecture**, and have compatible kernel, CRIU, containerd and runc. The successful run used `x86_64`, K3s `v1.34.1+k3s1`, containerd `v2.1.4-k3s2`, runc `1.3.1` and CRIU `4.2.1`. See Section 19 for tested setup and the version-mismatch failure.
+- The **source K3s** must already be running under root-owned Podman as a container named `k3s-server`, with the kubelet checkpoint API enabled. Use that cluster, not a separate host K3s process.
+- The **destination K3s** must have a node named `checkpoint-restore-dest`, the `PodRestore` CRD/controller installed, and the host CRI restore proxy correctly wired into the kubelet's runtime endpoint. Follow [the operator restore guide](https://github.com/checkpoint-restore/checkpoint-restore-operator/blob/main/docs/restore.md) and Section 19.4. In this lab, the actual upstream socket was `/run/k3s/containerd/containerd.sock`; the generic `/run/containerd/containerd.sock` is not correct.
+- Both machines require `local-path` StorageClass, Git, SSH access, registry access or imported images, and enough free disk space for checkpoint archives. Source additionally needs Podman, `openssl`, `curl`, `nsenter` (`util-linux`), `python3` and `sha256sum`.
+- These scripts assume **fresh MiniMeet resources** on both clusters. Do not run them over a production PostgreSQL/Redis instance, or over the already completed migration.
+- The source SSH identity must be authorized for an account with `sudo k3s` access on the destination. The default destination username is `garv`, but you can change it.
+
+Check the prerequisites **before any state-changing command**:
+
+```bash
+# SOURCE HOST (not inside the K3s container)
+sudo podman ps --filter name=k3s-server
+sudo podman exec k3s-server kubectl get nodes -o wide
+sudo podman exec k3s-server /bin/k3s --version
+
+# DESTINATION HOST
+sudo k3s kubectl get nodes -o wide
+sudo k3s kubectl get crd podrestores.criu.org
+sudo k3s kubectl get pods -n checkpoint-restore-operator
+sudo systemctl is-active cri-restore-proxy.socket
+curl -fsS http://127.0.0.1:18080/readyz
+sudo k3s kubectl get storageclass local-path
+```
+
+The proxy endpoint must return `ok`, the operator Pod must be running, and the node must be `Ready`. If a prerequisite fails, **fix it before moving on**. Installing K3s or the operator with an arbitrary latest version is not a guaranteed substitute.
+
+---
+
+# 23. Full copy-and-paste MiniMeet migration flow (fresh compatible lab)
+
+The following is the complete **application-level runbook**. Commands are divided by the machine on which they must run. The included scripts expand into normal Kubernetes/CRIU commands and are in the repository for inspection, not downloaded from an unknown host. They validate key preconditions and stop on failures.
+
+> **Important:** The source and destination need a **compatible K3s/CRIU environment set up first**, as described above. Never paste these commands into a live production cluster. The sample backend/worker application has been newly reconstructed and not yet independently tested end-to-end from a fresh install.
+
+## Phase A — Prepare the source VM
+
+Run on the **source Ubuntu host**, not inside the Podman container:
+
+```bash
+git clone https://github.com/garvagrawal9084/Distributed-Process-Migration-using-CRIU.git
+cd Distributed-Process-Migration-using-CRIU
+bash lab/scripts/source-setup.sh
+```
+
+What this script does: creates `minimeet-db-secret` and `minimeet-app-config` with a random lab password (if absent), builds `localhost/minimeet-backend:v3`, imports the image into source K3s, creates PostgreSQL/Redis/three-container MiniMeet resources, initializes the `meetings` table, and waits for the Deployments.
+
+Verify the source:
+
+```bash
+sudo podman exec k3s-server kubectl get pod,deploy,svc,pvc
+sudo podman exec k3s-server kubectl exec deployment/minimeet-backend -c backend -- \
+  python -c 'import urllib.request;print(urllib.request.urlopen("http://127.0.0.1:8000/health").read().decode())'
+```
+
+Generate two sample meetings **before checkpointing** so we can verify they survive:
+
+```bash
+for TITLE in "CRIU Migration Test" "Worker v2 Test"; do
+  sudo podman exec k3s-server kubectl exec deployment/minimeet-backend -c backend -- \
+    python -c 'import sys,json,urllib.request; b=json.dumps({"title":sys.argv[1]}).encode(); q=urllib.request.Request("http://127.0.0.1:8000/meetings",data=b,headers={"Content-Type":"application/json"},method="POST");print(urllib.request.urlopen(q,timeout=10).read().decode())' "$TITLE"
+done
+sudo podman exec k3s-server kubectl exec deployment/postgres -- \
+  psql -U minimeet -d minimeet -c \
+  'SELECT id,title,processed_at FROM meetings ORDER BY id;'
+```
+
+Both `processed_at` values should become non-NULL before continuing; rerun the final read-only query if the worker is still processing.
+
+## Phase B — Prepare SSH and the destination
+
+On the **source host**, set your actual destination address and username once:
+
+```bash
+export DEST_IP=192.168.122.118
+export DEST_USER=garv
+export SSH_KEY="$HOME/.ssh/checkpoint-transfer"
+test -f "$SSH_KEY" || ssh-keygen -t ed25519 -f "$SSH_KEY" -C checkpoint-transfer
+ssh-copy-id -i "$SSH_KEY.pub" "$DEST_USER@$DEST_IP"
+ssh -i "$SSH_KEY" -o IdentitiesOnly=yes "$DEST_USER@$DEST_IP" 'hostname; sudo k3s kubectl get nodes'
+```
+
+If your destination has a different node name, **update `checkpoint-restore-dest`** in `lab/scripts/destination-restore.sh` before running it. The K3s operator installation, CRI proxy, storage driver, and compatible version requirements from Phase A must already be satisfied.
+
+Make the same repository available on the **destination** (command runs on source):
+
+```bash
+ssh -i "$SSH_KEY" -o IdentitiesOnly=yes "$DEST_USER@$DEST_IP" \
+  'git clone https://github.com/garvagrawal9084/Distributed-Process-Migration-using-CRIU.git'
+```
+
+## Phase C — Quiesce, back up, checkpoint and transfer
+
+On the **source host**, in the repository directory, with the three environment variables above still set:
+
+```bash
+bash lab/scripts/checkpoint-transfer.sh
+```
+
+This script:
+
+1. Changes the **source** MiniMeet Service selector to disable new routed traffic, sets `/shared/minimeet.pause`, and waits for both status files to say `PAUSED`.
+2. Exports a custom-format PostgreSQL dump, a Redis RDB backup, and `/shared` contents (including the pause file).
+3. Calls the **source kubelet HTTPS checkpoint API once for each container** (`backend`, `worker`, `sidecar`). It extracts the returned timestamped archive filenames; no hardcoded filenames.
+4. Copies the three archives from the root-owned K3s Podman container, computes SHA-256 checksums and transfers the archives, backup files and app image using SSH/SCP.
+5. Transfers just the two sanitized Kubernetes Secrets, without printing their passwords.
+
+The local output directory is `~/minimeet-migration/v3/`; the corresponding destination directory is `/home/<destination-user>/minimeet-migration/v3/`. The file `checkpoints.tsv` preserves the dynamically generated checkpoint names.
+
+**Do not remove `minimeet.pause` or re-enable the source Service after this step.** The application must have a single writer. The checkpoint API example uses `--insecure` for the **isolated lab** and temporarily copies a privileged K3s client key; production setups must validate the server certificate and use proper credential handling.
+
+## Phase D — Restore data services, the shared volume and all three CRIU processes
+
+Open a shell **on the destination VM**:
+
+```bash
+ssh -i "$SSH_KEY" -o IdentitiesOnly=yes "$DEST_USER@$DEST_IP"
+```
+
+Then run these commands **inside the destination shell**:
+
+```bash
+cd ~/Distributed-Process-Migration-using-CRIU
+bash lab/scripts/destination-restore.sh
+```
+
+The destination script checks checksums and prerequisites, imports the MiniMeet image, installs the checkpoint archives in `/var/lib/kubelet/checkpoints/`, restores PostgreSQL into an empty database, seeds Redis from the RDB, converts Redis to persistent AOF, then builds the `PodRestore` from the **actual three filenames**:
+
+```yaml
+apiVersion: criu.org/v1
+kind: PodRestore
+metadata:
+  name: minimeet-restored-v3-<generated-suffix>
+spec:
+  targetNode: checkpoint-restore-dest
+  checkpoints:
+    - container: backend
+      path: /var/lib/kubelet/checkpoints/<actual-backend-archive>.tar
+    - container: worker
+      path: /var/lib/kubelet/checkpoints/<actual-worker-archive>.tar
+    - container: sidecar
+      path: /var/lib/kubelet/checkpoints/<actual-sidecar-archive>.tar
+  template:
+    spec:
+      initContainers:
+        - name: restore-shared
+          # Extracts shared.tar to /shared and verifies minimeet.pause
+      containers:
+        - name: backend
+          # Original checkpoint-compatible image and command
+        - name: worker
+        - name: sidecar
+```
+
+*The block above is a **structure illustration**; the script generates the complete valid manifest with all image, command, Secret, volume and readiness fields. Do not apply that shortened YAML.*
+
+Crucially, **do not include `spec.template.metadata.labels`**; the installed operator rejected it in the real experiment. The script uses `kubectl apply --dry-run=server` first, applies the manifest, confirms the shared init container ran and both restored processes are paused, removes **only the destination** pause file, then waits for `3/3 Ready`.
+
+The restored Pod will initially report `2/3` because backend readiness returns HTTP 503 while paused; this is expected. If it fails to progress, inspect events and logs rather than deleting storage or restarting the Pod.
+
+## Phase E — Verify actual post-migration work
+
+On the **destination VM**:
+
+```bash
+bash lab/scripts/validate-destination.sh
+```
+
+This verifies that the `PodRestore` and Pod exist, sends a **new** `POST /meetings` to the CRIU-restored backend, polls destination PostgreSQL until the restored worker sets a non-NULL `processed_at`, and checks Redis `PONG`.
+
+For interactive inspection, directly on the destination:
+
+```bash
+sudo k3s kubectl get podrestore -o wide
+sudo k3s kubectl get pods -o wide
+sudo k3s kubectl exec deployment/postgres -- \
+  psql -U minimeet -d minimeet \
+  -c 'SELECT id,title,created_at,processed_at FROM meetings ORDER BY id;'
+sudo k3s kubectl port-forward pod/"$(cat ~/minimeet-migration/v3/restored-pod-name.txt)" 8000:8000
+```
+
+Keep the port-forward running in that terminal; in a second destination terminal:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/meetings
+curl -sS -X POST http://127.0.0.1:8000/meetings \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"CRIU Migration Success Test"}'
+```
+
+The API docs are at `http://127.0.0.1:8000/docs` **on a machine that has access to the port-forward**. For a browser on your laptop, forward destination localhost through SSH rather than assuming the destination Pod port is publicly reachable.
+
+### How to decide that the experiment succeeded
+
+A strong result requires **all** of the following: successful three-container `PodRestore`; actual restored process commands and zero unexpected restarts; correct `/shared` backup initialized before resume; source quiesced; backend HTTP 200 with DB and Redis healthy; previous meeting rows preserved; and **a newly enqueued meeting processed by the restored worker**. The final November run met those criteria.
+
+### Important caveats before a real traffic cutover
+
+- The source remains paused and its Service deliberately unrouted; **DNS/routing switch, ingress configuration, client connection draining, measured downtime, and rollback/cutover automation are separate tasks**.
+- This is a *cold/quiesced checkpoint-and-restore experiment*, not automatic seamless live migration. External TCP sessions do not automatically migrate.
+- `emptyDir` and data services need independent backup/restore; CRIU alone is not a database migration tool.
+- Checkpoint archives may contain memory-resident secrets; avoid committing them or the Kubernetes Secret JSON, SSH private keys, database dumps, and application state archives to Git.
+- An init container must restore the source pause marker before CRIU processes resume; removing it prematurely can cause the source and destination to write independently.
+- Operator APIs and runtime compatibility may change; pin compatible tested versions and validate on an isolated lab. No documentation can guarantee error-free execution across arbitrary Linux distributions, kernels or CRIU/runtime combinations.
+
+---
+
+_End of multi-container MiniMeet experiment and reproducible lab walkthrough._
