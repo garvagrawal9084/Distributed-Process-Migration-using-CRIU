@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$HOME/minimeet-migration/v3"
 mkdir -p "$WORK"
 chmod 700 "$WORK"
-k() { sudo podman exec k3s-server kubectl "$@"; }
+k() { sudo podman exec -i k3s-server kubectl "$@"; }
 
 sudo podman ps --format '{{.Names}}' | grep -Fx k3s-server
 k get nodes
