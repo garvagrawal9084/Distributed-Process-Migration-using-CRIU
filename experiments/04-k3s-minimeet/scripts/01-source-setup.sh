@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run on the SOURCE Ubuntu host: K3s runs in ROOT-owned Podman "k3s-server".
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$HOME/minimeet-migration/v3"
 mkdir -p "$WORK"
 chmod 700 "$WORK"
@@ -28,7 +28,7 @@ else
 fi
 
 echo "Building the reference MiniMeet image (asyncio, no uvloop)."
-sudo podman build -t localhost/minimeet-backend:v3 "$ROOT/lab/minimeet"
+sudo podman build -t localhost/minimeet-backend:v3 "$HERE/app"
 sudo podman save -o "$WORK/minimeet-backend-v3-image.tar" localhost/minimeet-backend:v3
 sudo chown "$(id -un):$(id -gn)" "$WORK/minimeet-backend-v3-image.tar"
 sudo podman exec k3s-server mkdir -p /var/lib/rancher/k3s/agent/images
@@ -37,7 +37,7 @@ sudo podman cp "$WORK/minimeet-backend-v3-image.tar" \
 echo "Waiting for K3s's image importer to discover the tarball."
 sleep 10
 
-k apply -f - < "$ROOT/lab/k8s/source.yaml"
+k apply -f - < "$HERE/manifests/source.yaml"
 k rollout status deployment/postgres --timeout=300s
 k rollout status deployment/redis --timeout=300s
 

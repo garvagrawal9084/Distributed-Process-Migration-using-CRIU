@@ -3,7 +3,7 @@
 # with compatible CRIU/containerd/runc and the PodRestore operator/CRI proxy installed.
 # This script is intentionally non-idempotent; it refuses existing app resources.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIR="$HOME/minimeet-migration/v3"
 k() { sudo k3s kubectl "$@"; }
 test -f "$DIR/checkpoints.tsv"
@@ -35,7 +35,7 @@ echo "Staging Redis and shared-volume snapshots."
 k create configmap minimeet-redis-rdb --from-file="dump.rdb=$DIR/redis-dump-quiesced.rdb"
 k create secret generic minimeet-shared-backup \
   --from-file="shared.tar=$DIR/minimeet-shared-asyncio-quiesced.tar"
-k apply -f "$ROOT/lab/k8s/destination.yaml"
+k apply -f "$HERE/manifests/destination.yaml"
 k rollout status deployment/postgres --timeout=360s
 k rollout status deployment/redis --timeout=360s
 test "$(k exec deployment/postgres -- psql -U minimeet -d minimeet -Atc \

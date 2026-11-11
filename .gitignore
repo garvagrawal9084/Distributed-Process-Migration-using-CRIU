@@ -1,0 +1,28 @@
+# Runtime artifacts: checkpoints may contain process memory, credentials and other secrets.
+*.img
+*.tar
+*.tar.gz
+*.tgz
+*.dump
+*.rdb
+*.key
+*.crt
+*.pem
+*.kubeconfig
+*.kubelet-client*
+SHA256SUMS
+checkpoints.tsv
+checkpoint-name.txt
+restored-pod-name.txt
+*.log
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+# Local runtime folders
+minimeet-migration/
+criu-podman-transfer/
+criu-k3s-nginx/
+dump/

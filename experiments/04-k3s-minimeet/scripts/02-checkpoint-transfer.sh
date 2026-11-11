@@ -31,8 +31,9 @@ test "${BACK:-}" = PAUSED && test "${WORKER:-}" = PAUSED || {
   exit 1
 }
 echo "Backend and worker PAUSED. Do not resume the source until after cutover."
-echo "Confirm no pending Redis jobs (DBSIZE):"
-k exec deployment/redis -- redis-cli DBSIZE
+echo "Confirm zero queued Redis jobs (the demo queue must be drained):"
+QUEUED="$(k exec deployment/redis -- redis-cli LLEN meeting_jobs)"
+test "$QUEUED" = 0 || { echo "Redis queue still has jobs: $QUEUED" >&2; exit 1; }
 
 echo "Backing up PostgreSQL (custom-format dump)."
 k exec deployment/postgres -- pg_dump -U minimeet -d minimeet -Fc > "$WORK/minimeet-db-quiesced.dump"
