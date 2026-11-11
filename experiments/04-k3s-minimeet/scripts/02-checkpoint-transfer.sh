@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run on SOURCE after source-setup.sh and after destination CRIU proxy/operator are ready.
-# Usage: DEST_IP=... DEST_USER=... SSH_KEY=~/.ssh/... bash lab/scripts/checkpoint-transfer.sh
+# Usage: DEST_IP=... DEST_USER=... SSH_KEY=~/.ssh/... bash experiments/04-k3s-minimeet/scripts/02-checkpoint-transfer.sh
 set -euo pipefail
 : "${DEST_IP:?Set DEST_IP to reachable destination IPv4}"
 DEST_USER="${DEST_USER:-garv}"
