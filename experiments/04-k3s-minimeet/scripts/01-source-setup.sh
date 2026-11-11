@@ -9,6 +9,10 @@ k() { sudo podman exec -i k3s-server kubectl "$@"; }
 
 sudo podman ps --format '{{.Names}}' | grep -Fx k3s-server
 k get nodes
+if k get deployment minimeet-backend >/dev/null 2>&1; then
+  echo "MiniMeet Deployment already exists. Refusing to modify an existing source workload." >&2
+  exit 1
+fi
 echo "Preparing fresh demo Secrets; existing Secrets are left untouched."
 if ! k get secret minimeet-db-secret >/dev/null 2>&1; then
   DB_PASSWORD="$(openssl rand -hex 16)"
